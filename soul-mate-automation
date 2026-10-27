@@ -1,0 +1,58 @@
+for line in records:
+    # التأكد من أن السطر ينتمي لفاتورة عملاء ومبيعات صحيحة
+    if line.move_id and line.move_id.move_type == 'out_invoice':
+        product = line.product_id
+        if product:
+            try:
+                owner_cost = product.x_studio_owner_cost or 0.0
+            except Exception:
+                owner_cost = 0.0
+            
+            if owner_cost > 0:
+                qty = line.quantity
+                total_price = line.price_subtotal  # السعر الإجمالي للسطر بدون ضريبة
+                total_owner_cost = owner_cost * qty
+                
+                total_profit = total_price - total_owner_cost
+                if total_profit > 0:
+                    half_profit = total_profit / 2.0
+                else:
+                    half_profit = 0.0
+                    
+                owner_due_amount = total_owner_cost + half_profit
+                
+                journal = env['account.journal'].search([('type', '=', 'general')], limit=1)
+                account_dues = env['account.account'].search([('code', '=', '200116')], limit=1)
+                account_commission = env['account.account'].search([('code', '=', '400202')], limit=1)
+                account_sales_temp = line.account_id
+                
+                if journal and account_dues and account_commission:
+                    move_vals = {
+                        'journal_id': journal.id,
+                        'move_type': 'entry',  # تحديد أن المستند قيد عام لتجنب أي قيود على الحقول
+                        'ref': f'تسوية عطور سول ميت - {line.move_id.name or ""}',
+                        'line_ids': [
+                            (0, 0, {
+                                'name': 'إلغاء الإيراد المؤقت لعطور الأمانة',
+                                'account_id': account_sales_temp.id,
+                                'debit': total_price,
+                                'credit': 0.0,
+                            }),
+                            (0, 0, {
+                                'name': 'مستحقات صاحب العطور',
+                                'account_id': account_dues.id,
+                                'debit': 0.0,
+                                'credit': owner_due_amount,
+                            }),
+                            (0, 0, {
+                                'name': 'حصة أرباحك (عمولة)',
+                                'account_id': account_commission.id,
+                                'debit': 0.0,
+                                'credit': half_profit,
+                            }),
+                        ]
+                    }
+                    # إنشاء القيد ثم ترحيله تلقائياً ليصبح مكتوباً بشكل نهائي
+                    new_move = env['account.move'].create(move_vals)
+                    if new_move:
+                        new_move.action_post()
